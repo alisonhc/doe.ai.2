@@ -27,6 +27,7 @@ class _AbstractDataSource(ABC):
     def getData(self):
         pass
 
+
 class _CornellMovieCorpus(_AbstractDataSource):
     @property
     def localPath(self):
@@ -99,10 +100,49 @@ class _CornellMovieCorpus(_AbstractDataSource):
         return characterConversations, inputFile, outputFile
 
 
+class _UbuntuDialogCorpus(_AbstractDataSource):
+
+    @property
+    def _url(self):
+        return None
+
+    @property
+    def localPath(self, **kwargs):
+        return _dataDir / "ubuntu_dialog_corpus"
+
+    def getData(self):
+        if not self.localPath.exists():
+            self.localPath.mkdir()
+            raise FileExistsError("Please download the Ubuntu dialog corpus and follow the instructions here"
+                                  "https://github.com/rkadlec/ubuntu-ranking-dataset-creator. Put the train / test "
+                                  "valid files in the path {}".format(str(self.localPath)))
+        # build training prompt / response pairs
+        prompt, response = [], []
+        trainFile = self.localPath / "train.csv"
+        with open(str(trainFile), "r") as f:
+            f.readline()  # get rid of first line
+            for line in f:
+                parts = line.split("__eot__")
+                if float(line.split(",")[-1].strip()) == 1.0:  # if the line is labeled as correct
+                    tmpResponse = parts[-1][:-5].lower().strip(' ,"')
+                    if len(findall(r"__eou__", tmpResponse)) < 2:
+                        response.append(sub(r"\s?__eou__\s?", r" ", tmpResponse))
+                        tmpPrompt = parts[-2].lower().strip()
+                        prompt.append(sub(r"\s?__eou__\s?", r" ", tmpPrompt))
+
+        with open(str(self.localPath / "train.enc"), "w") as f:
+            f.write("\n".join(prompt))
+
+        with open(str(self.localPath / "train.dec"), "w") as f:
+            f.write("\n".join(response))
+
+        return prompt, response
+
+
 class DataSource(Enum):
     CORNELL_MOVIE_CORPUS = _CornellMovieCorpus()
-    CORNELL_MOVIE_QUOTES_CORPUS = "https://www.cs.cornell.edu/~cristian/memorability_files/cornell_movie_quotes_corpus.zip"
+    UBUNTU_DIALOG_CORPUS = _UbuntuDialogCorpus()
 
 
 if __name__ == "__main__":
-    cornell = DataSource.CORNELL_MOVIE_CORPUS.value.getData(character="Bianca")
+    ubuntu = DataSource.UBUNTU_DIALOG_CORPUS.value.getData()
