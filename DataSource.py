@@ -7,10 +7,30 @@ from shutil import copyfileobj, move, rmtree
 from tempfile import SpooledTemporaryFile
 from re import sub, findall
 import random
+from collections import Counter
 
 _dataDir = Path("data")
 if not _dataDir.exists():
     _dataDir.mkdir()
+
+
+def writeToFile(path, prompt, response, filename="train"):
+    if not path.exists():
+        path.mkdir()
+    for lines, extension in [(prompt, "enc"), (response, "dec")]:
+        with open(path / (filename + "." + extension), "w") as f:
+            f.write("\n".join(lines))
+
+
+def makeTrainTest(*args, testPercent=0.1,):
+    l = len(args[0])
+    for arg in args:
+        assert l == len(arg)
+    testIndices = set(random.sample(range(l), round(l * testPercent)))
+    trainIndices = sorted(set(range(l)) - testIndices)
+    testIndices = sorted(testIndices)
+    return [[arg[i] for i in trainIndices] for arg in args], \
+           [[arg[i] for i in testIndices] for arg in args]
 
 
 class _AbstractDataSource(ABC):
@@ -25,11 +45,43 @@ class _AbstractDataSource(ABC):
         return ""
 
     @abstractmethod
+    def maybeDownload(self, force=False):
+        pass
+
+    @abstractmethod
     def getData(self):
         pass
 
 
 class _CornellMovieCorpus(_AbstractDataSource):
+    def __init__(self):
+        self.movieLines = self.localPath / "movie_lines.txt"
+        self.movieConversations = self.localPath / "movie_conversations.txt"
+        self.movieMeta = self.localPath / "movie_characters_metadata.txt"
+        self.maybeDownload()
+
+        with open(str(self.movieConversations), "r", errors="ignore") as f:
+            self.conversations = [findall(r"L\d+", line.split("+++$+++")[-1]) for line in f]
+
+        self._lineMap = {}
+        with open(str(self.movieLines), "r", errors="ignore") as f:
+            for line in f:
+                _line = line.split("+++$+++")
+                lineId = _line[0].strip()
+                # get rid of newlines and beginning spaces
+                self._lineMap[lineId] = _line[-1].strip()
+
+        self._charMap = {}
+        with open(str(self.movieMeta), errors="ignore") as f:
+            for line in f:
+                _line = line.split("+++$+++")
+                name = _line[1].strip().lower()
+                self._charMap[name] = _line[0].strip()
+
+        self._prevLineMap = {}
+        for lineIds in self.conversations:
+            self._prevLineMap.update(zip(lineIds[1:], lineIds[:-1]))
+
     @property
     def localPath(self):
         return _dataDir / "cornell movie-dialogs corpus"
@@ -39,17 +91,11 @@ class _CornellMovieCorpus(_AbstractDataSource):
         return "http://www.mpi-sws.org/~cristian/data/cornell_movie_dialogs_corpus.zip"
 
     def characterToId(self, character):
-        charId = ""
-        with open(self.localPath / "movie_characters_metadata.txt", errors="ignore") as f:
-            for line in f:
-                _line = line.split("+++$+++")
-                if _line[1].strip().lower() == character.lower():
-                    charId = _line[0].strip()
-                    break
-        return charId
+        if len(self._charMap) != 0:
+            return self._charMap[character.lower()]
 
-    def getData(self, character=None, characterId=None):
-        if not self.localPath.exists():
+    def maybeDownload(self, force=False):
+        if not self.localPath.exists() or force:
             rootZipDir = "cornell movie-dialogs corpus"
             with urlopen(self._url) as response, SpooledTemporaryFile() as tmp:
                 copyfileobj(response, tmp)
@@ -63,58 +109,30 @@ class _CornellMovieCorpus(_AbstractDataSource):
                 move(str(p), str(self.localPath))
             rmtree(str(self.localPath / rootZipDir))
 
-        # get first character id with name of character
-        charId = characterId or self.characterToId(character)
+    def getMostCommonCharacters(self, num):
+        with open(str(self.movieLines), errors="ignore") as f:
+            names = [line.split("+++$+++")[3].strip().lower() for line in f]
+        most_common = []
+        most_common.extend(Counter(names).most_common(num))
+        return [self.getCharacter(characterName=character[0]) for character in most_common], \
+                [character[0] for character in most_common]
 
-        with open(str(self.localPath / "movie_conversations.txt"), "r", errors="ignore") as f:
-            conversations = [findall(r"\d+", line.split("+++$+++")[-1]) for line in f]
-
-        # for some reason, python can't parse the file at all without errors="ignore", something about uft-8 encoding
-        with open(str(self.localPath / "movie_lines.txt"), "r", errors="ignore") as f:
-            lineDict = {}
+    def getCharacter(self, characterId=None, characterName=None):
+        characterId = characterId or self.characterToId(characterName)
+        prompt, response = [], []
+        with open(str(self.movieLines), "r", errors="ignore") as f:
             for line in f:
                 _line = line.split("+++$+++")
-                lineId = _line[0][1:].strip()
-                lineCharacterId = _line[1].strip()
-                lineDict[lineId] = (lineCharacterId, _line[-1].strip())  # get rid of newlines and beginning spaces
+                lineId = _line[0].strip()
+                if _line[1].strip() == characterId and lineId in self._prevLineMap:
+                    prompt.append(self._lineMap[self._prevLineMap[lineId]])
+                    response.append(self._lineMap[lineId])
+        return prompt, response
 
-        characterConversations = []
-        for conversation in conversations:
-            for i in range(len(conversation)-1):
-                if lineDict[conversation[i+1]][0] == charId:
-                    prompt = lineDict[conversation[i]][1]
-                    response = lineDict[conversation[i+1]][1]
-                    characterConversations.append([prompt, response])
-
-        conversationPath = self.localPath / charId
-        if not conversationPath.exists():
-            conversationPath.mkdir()
-        inputTrainFile = conversationPath / "train.enc"
-        outputTrainFile = conversationPath / "train.dec"
-        inputTestFile = conversationPath / "test.enc"
-        outputTestFile = conversationPath / "test.dec"
-
-        train_enc = open(str(inputTrainFile), "w")
-        train_dec = open(str(outputTrainFile), "w")
-        test_enc = open(str(inputTestFile), "w")
-        test_dec = open(str(outputTestFile), "w")
-
-        inputs = [c[:-1] for c in characterConversations if len(c) >= 2]
-        outputs = [c[1:] for c in characterConversations if len(c) >= 2]
-
-        test_ids = set(random.sample([i for i in range(len(inputs))], int(len(inputs)/2)))  # todo: is this a list or a set?Y
-        for i in range(len(inputs)):
-            if i in test_ids:
-                test_enc.write("\n".join([line for line in inputs[i]]) + "\n")
-                test_dec.write("\n".join([line for line in outputs[i]]) + "\n")
-            else:
-                train_enc.write("\n".join([line for line in inputs[i]]) + "\n")
-                train_dec.write("\n".join([line for line in outputs[i]]) + "\n")
-        train_enc.close()
-        train_dec.close()
-        test_enc.close()
-        test_dec.close()
-        return characterConversations, inputTrainFile, inputTestFile, outputTrainFile, outputTestFile
+    def getData(self):
+        prompt = [self._lineMap[self._prevLineMap[lineId]] for lineId in self._prevLineMap]
+        response = [self._lineMap[lineId] for lineId in self._prevLineMap]
+        return prompt, response
 
 
 class _UbuntuDialogCorpus(_AbstractDataSource):
@@ -127,12 +145,16 @@ class _UbuntuDialogCorpus(_AbstractDataSource):
     def localPath(self, **kwargs):
         return _dataDir / "ubuntu_dialog_corpus"
 
-    def getData(self):
+    def maybeDownload(self, force=False):
         if not self.localPath.exists():
             self.localPath.mkdir()
             raise FileExistsError("Please download the Ubuntu dialog corpus and follow the instructions here"
                                   "https://github.com/rkadlec/ubuntu-ranking-dataset-creator. Put the train / test "
                                   "valid files in the path {}".format(str(self.localPath)))
+
+    def getData(self):
+        self.maybeDownload()
+
         # build training prompt / response pairs
         prompt, response = [], []
         trainFile = self.localPath / "train.csv"
@@ -146,20 +168,29 @@ class _UbuntuDialogCorpus(_AbstractDataSource):
                         response.append(sub(r"\s?__eou__\s?", r" ", tmpResponse))
                         tmpPrompt = parts[-2].lower().strip()
                         prompt.append(sub(r"\s?__eou__\s?", r" ", tmpPrompt))
-
-        with open(str(self.localPath / "train.enc"), "w") as f:
-            f.write("\n".join(prompt))
-
-        with open(str(self.localPath / "train.dec"), "w") as f:
-            f.write("\n".join(response))
-
         return prompt, response
 
 
 class DataSource(Enum):
-    CORNELL_MOVIE_CORPUS = _CornellMovieCorpus()
-    UBUNTU_DIALOG_CORPUS = _UbuntuDialogCorpus()
+    CORNELL_MOVIE_CORPUS = _CornellMovieCorpus
+    UBUNTU_DIALOG_CORPUS = _UbuntuDialogCorpus
 
 
 if __name__ == "__main__":
-    ubuntu = DataSource.UBUNTU_DIALOG_CORPUS.value.getData()
+    cornell = DataSource.CORNELL_MOVIE_CORPUS.value()
+    cPrompt, cResponse = cornell.getData()
+    train, test = makeTrainTest(cPrompt, cResponse)
+    writeToFile(cornell.localPath / "all", train[0], train[1], "train")
+    writeToFile(cornell.localPath / "all", test[0], test[1], "test")
+
+    characters, names_ = cornell.getMostCommonCharacters(5)
+    for i,char in enumerate(characters):
+        train, test = makeTrainTest(*char)
+        writeToFile(cornell.localPath / names_[i], train[0], train[1], "train")
+        writeToFile(cornell.localPath / names_[i], test[0], test[1], "test")
+
+    # ubuntu = DataSource.UBUNTU_DIALOG_CORPUS.value()
+    # uPrompt,uResponse = ubuntu.getData()
+    # train, test = makeTrainTest(uPrompt,uResponse)
+    # writeToFile(ubuntu.localPath, train[0], train[1], "train")
+    # writeToFile(ubuntu.localPath, test[0], test[1], "test")
