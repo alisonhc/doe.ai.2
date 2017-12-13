@@ -59,6 +59,8 @@ def get_config(config_file='seq2seq.ini'):
 # See seq2seq_model.Seq2SeqModel for details of how they work.
 _buckets = [(5, 10), (10, 15), (20, 25), (40, 50)]
 
+# todo: use more than one utterance as the encoder
+# todo: give chatbot a personality
 
 def read_data(source_path, target_path, max_size=None):
   """Read data from source and target files and put into buckets.
@@ -225,6 +227,7 @@ def decode():
     while sentence:
       # Get token-ids for the input sentence.
       token_ids = data_utils.sentence_to_token_ids(tf.compat.as_bytes(sentence), enc_vocab)
+      print("token ids for input sentence: ", token_ids)
       # Which bucket does it belong to?
       bucket_id = min([b for b in xrange(len(_buckets))
                        if _buckets[b][0] > len(token_ids)])
@@ -235,11 +238,12 @@ def decode():
       _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
                                        target_weights, bucket_id, True)
       # This is a greedy decoder - outputs are just argmaxes of output_logits.
+      # todo: change this to beam search
       outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
       # If there is an EOS symbol in outputs, cut them at that point.
       if data_utils.EOS_ID in outputs:
         outputs = outputs[:outputs.index(data_utils.EOS_ID)]
-      # Print out French sentence corresponding to outputs.
+      # Print out sentence corresponding to outputs.
       print(" ".join([tf.compat.as_str(rev_dec_vocab[output]) for output in outputs]))
       print("> ", end="")
       sys.stdout.flush()

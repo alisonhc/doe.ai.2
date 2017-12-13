@@ -6,6 +6,7 @@ from zipfile import ZipFile
 from shutil import copyfileobj, move, rmtree
 from tempfile import SpooledTemporaryFile
 from re import sub, findall
+import random
 
 _dataDir = Path("data")
 if not _dataDir.exists():
@@ -65,11 +66,11 @@ class _CornellMovieCorpus(_AbstractDataSource):
         # get first character id with name of character
         charId = characterId or self.characterToId(character)
 
-        with open(self.localPath / "movie_conversations.txt", "r", errors="ignore") as f:
+        with open(str(self.localPath / "movie_conversations.txt"), "r", errors="ignore") as f:
             conversations = [findall(r"\d+", line.split("+++$+++")[-1]) for line in f]
 
         # for some reason, python can't parse the file at all without errors="ignore", something about uft-8 encoding
-        with open(self.localPath / "movie_lines.txt", "r", errors="ignore") as f:
+        with open(str(self.localPath / "movie_lines.txt"), "r", errors="ignore") as f:
             lineDict = {}
             for line in f:
                 _line = line.split("+++$+++")
@@ -88,16 +89,32 @@ class _CornellMovieCorpus(_AbstractDataSource):
         conversationPath = self.localPath / charId
         if not conversationPath.exists():
             conversationPath.mkdir()
-        inputFile = conversationPath / "train.enc"
-        outputFile = conversationPath / "train.dec"
+        inputTrainFile = conversationPath / "train.enc"
+        outputTrainFile = conversationPath / "train.dec"
+        inputTestFile = conversationPath / "test.enc"
+        outputTestFile = conversationPath / "test.dec"
+
+        train_enc = open(str(inputTrainFile), "w")
+        train_dec = open(str(outputTrainFile), "w")
+        test_enc = open(str(inputTestFile), "w")
+        test_dec = open(str(outputTestFile), "w")
+
         inputs = [c[:-1] for c in characterConversations if len(c) >= 2]
         outputs = [c[1:] for c in characterConversations if len(c) >= 2]
-        with open(inputFile, "w") as f:
-            f.write("\n".join([line for c in inputs for line in c]))
-        with open(outputFile, "w") as f:
-            f.write("\n".join([line for c in outputs for line in c]))
 
-        return characterConversations, inputFile, outputFile
+        test_ids = set(random.sample([i for i in range(len(inputs))], int(len(inputs)/2)))  # todo: is this a list or a set?Y
+        for i in range(len(inputs)):
+            if i in test_ids:
+                test_enc.write("\n".join([line for line in inputs[i]]) + "\n")
+                test_dec.write("\n".join([line for line in outputs[i]]) + "\n")
+            else:
+                train_enc.write("\n".join([line for line in inputs[i]]) + "\n")
+                train_dec.write("\n".join([line for line in outputs[i]]) + "\n")
+        train_enc.close()
+        train_dec.close()
+        test_enc.close()
+        test_dec.close()
+        return characterConversations, inputTrainFile, inputTestFile, outputTrainFile, outputTestFile
 
 
 class _UbuntuDialogCorpus(_AbstractDataSource):
