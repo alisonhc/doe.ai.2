@@ -29,6 +29,8 @@ import tensorflow as tf
 
 import data_utils
 import seq2seq_model
+import nltk
+from nltk.corpus import stopwords
 
 # python2 and python3 support
 try:
@@ -101,7 +103,6 @@ def read_data(source_path, target_path, max_size=None):
 
 
 def create_model(session, forward_only):
-
   """Create model and initialize or load parameters"""
   model = seq2seq_model.Seq2SeqModel( gConfig['enc_vocab_size'], gConfig['dec_vocab_size'], _buckets, gConfig['layer_size'], gConfig['num_layers'], gConfig['max_gradient_norm'], gConfig['batch_size'], gConfig['learning_rate'], gConfig['learning_rate_decay_factor'], forward_only=forward_only)
 
@@ -202,6 +203,16 @@ def train():
         sys.stdout.flush()
 
 
+def deleteRepeated(sentence):
+    tokens = nltk.word_tokenize(sentence)
+    tagTuples = nltk.pos_tag(tokens)
+    newTokens = []
+    for i in range(len(tokens)):
+        if len(newTokens) == 0 or (newTokens[-1] != tokens[i]) or (tokens[i] not in set(stopwords.words('english')) and len(tokens[i]) < 2) \
+                or tagTuples[i][1].startswith("JJ") or tokens[i].strip() == ".":
+            newTokens.append(tokens[i])
+    return " ".join(newTokens)
+
 def decode():
 
   # Only allocate part of the gpu memory when predicting.
@@ -227,7 +238,6 @@ def decode():
     while sentence:
       # Get token-ids for the input sentence.
       token_ids = data_utils.sentence_to_token_ids(tf.compat.as_bytes(sentence), enc_vocab)
-      print("token ids for input sentence: ", token_ids)
       # Which bucket does it belong to?
       bucket_id = min([b for b in xrange(len(_buckets))
                        if _buckets[b][0] > len(token_ids)])
@@ -238,13 +248,18 @@ def decode():
       _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
                                        target_weights, bucket_id, True)
       # This is a greedy decoder - outputs are just argmaxes of output_logits.
-      # todo: change this to beam search
-      outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
+      outputs = []
+      for logit in output_logits:
+          outputs.append(int(np.argmax(logit, axis=1)))
       # If there is an EOS symbol in outputs, cut them at that point.
       if data_utils.EOS_ID in outputs:
         outputs = outputs[:outputs.index(data_utils.EOS_ID)]
       # Print out sentence corresponding to outputs.
-      print(" ".join([tf.compat.as_str(rev_dec_vocab[output]) for output in outputs]))
+      sent = " ".join([tf.compat.as_str(rev_dec_vocab[output]) for output in outputs])
+      # todo: add nltk code to make sure sentence is grammatical
+      new_sent = deleteRepeated(sent)
+      print(sent)
+      print("new: ", new_sent)
       print("> ", end="")
       sys.stdout.flush()
       sentence = sys.stdin.readline()
@@ -301,7 +316,9 @@ def decode_line(sess, model, enc_vocab, rev_dec_vocab, sentence):
     _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs, target_weights, bucket_id, True)
 
     # This is a greedy decoder - outputs are just argmaxes of output_logits.
-    outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
+    outputs = []
+    for logit in output_logits:
+        outputs.append(int(np.argmax(logit, axis=1)))
 
     # If there is an EOS symbol in outputs, cut them at that point.
     if data_utils.EOS_ID in outputs:
