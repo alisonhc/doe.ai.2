@@ -19,6 +19,7 @@ Use [pip](https://pypi.python.org/pypi/pip) to install any missing dependencies
 
 Usage
 ===========
+Before training, run DataSource.py on the selected corpus and if you choose the Cornell Movie-Dialogs Corpus, a selected year or character.
 
 To train the bot, edit the `seq2seq.ini` file so that mode is set to train like so
 
